@@ -116,6 +116,7 @@
 <section id="account" class="sheet" aria-label="Tài khoản">
   <header class="sheet-head"><h2>Tài khoản</h2><button class="x" id="acctClose" aria-label="Đóng">✕</button></header>
   <div id="acctOut">
+    <p class="hint" id="acctHint" hidden>Đăng nhập để nhận lời mời kết bạn.</p>
     <p><b>Giữ ghi chú an toàn trên mọi máy.</b></p>
     <p class="meta">Đăng nhập để tự sao lưu và mở lại ghi chú trên điện thoại khác. Không bắt buộc, app vẫn dùng được khi chưa đăng nhập.</p>
     <div id="stepEmail">
@@ -132,10 +133,16 @@
   <div id="acctIn" hidden>
     <p><b id="acctMail"></b></p>
     <p class="meta" id="syncState"></p>
-    <button class="btn primary wide" id="acctSync">Đồng bộ ngay</button>
+    <button class="btn primary wide" id="acctFriends">Bạn bè</button>
+    <button class="btn quiet wide" id="acctSync">Đồng bộ ngay</button>
     <button class="btn quiet wide" id="acctOutBtn">Đăng xuất</button>
   </div>
   <p class="meta fine"><a href="privacy.html">Chính sách riêng tư</a></p>
+</section>
+
+<section id="friends" class="sheet" aria-label="Bạn bè">
+  <header class="sheet-head"><h2>Bạn bè</h2><button class="x" id="frClose" aria-label="Đóng">✕</button></header>
+  <div id="frBody"></div>
 </section>
 
 <section id="intro" class="sheet" aria-label="Hướng dẫn">

@@ -24,6 +24,22 @@ export async function signOut() {
   check({ data: null, error: (await (await client()).auth.signOut()).error });
 }
 
+// Friends. Every write goes through a server function (see supabase/phase2_friends.sql); a fake with this shape tests the UI.
+export async function friendsApi(uid) {
+  const sb = await client();
+  const rpc = async (fn, args = {}) => check(await sb.rpc(fn, args));
+  return {
+    profile: async () => check(await sb.from('profiles').select('display_name, friend_code').eq('id', uid).single()),
+    setName: async name => { check(await sb.from('profiles').update({ display_name: name }).eq('id', uid)); },
+    list: () => rpc('list_friendships'),
+    lookup: code => rpc('lookup_friend_code', { code }),
+    request: code => rpc('friend_request_by_code', { code }),
+    respond: (fid, accept) => rpc('respond_friend_request', { fid, accept }),
+    remove: fid => rpc('remove_friendship', { fid }),
+    block: other => rpc('block_user', { other }),
+  };
+}
+
 const BUCKET = 'mg';
 // The five calls sync.js needs. A fake with the same shape is enough to test sync without a server.
 export async function remote() {

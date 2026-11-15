@@ -60,7 +60,7 @@ function toast(msg) {
 }
 
 /* ---------- sheets ---------- */
-const sheets = ['compose', 'viewer', 'library', 'intro', 'account'];
+const sheets = ['compose', 'viewer', 'library', 'intro', 'account', 'friends'];
 function openSheet(id) {
   sheets.forEach(s => $(s).classList.toggle('open', s === id));
   $('scrim').classList.toggle('on', id !== 'compose');   // compose keeps the frozen frame clear
@@ -800,12 +800,13 @@ async function initAccount() {
     const cloud = await import('./cloud.js');
     session = await cloud.getSession();
     renderAccount();
-    cloud.onAuthChange(s => { const was = session; session = s; renderAccount(); if (s && !was) scheduleSync(300); });
+    cloud.onAuthChange(s => { const was = session; session = s; friendsCtl = null; renderAccount(); if (s && !was) { scheduleSync(300); checkPendingAdd(); } });
     if (session) scheduleSync(2500);
+    checkPendingAdd();
   } catch { /* offline on first load: stay local-only */ }
 }
 
-$('btnAccount').onclick = () => { renderAccount(); openSheet('account'); };
+$('btnAccount').onclick = () => { $('acctHint').hidden = !store_.get('mg-add'); renderAccount(); openSheet('account'); if (session) refreshFriendsBadge(); };
 $('acctClose').onclick = closeSheets;
 let codeEmail = '';
 $('acctSend').onclick = async () => {
@@ -834,9 +835,11 @@ $('acctVerify').onclick = async () => {
   try {
     session = await (await import('./cloud.js')).verifyCode(codeEmail, token);
     delete $('acctOut').dataset.keep;
+    friendsCtl = null;
     renderAccount(); closeSheets();
     toast('Đã đăng nhập');
     scheduleSync(300);
+    checkPendingAdd();
   } catch { toast('Mã sai hoặc đã hết hạn. Bấm Đổi email để nhận mã mới.'); }
   b.disabled = false;
 };
@@ -857,11 +860,58 @@ $('acctOutBtn').onclick = async () => {
   try { await (await import('./cloud.js')).signOut(); } catch {}
   for (const p of await rawPlaces()) await dropPlace(p.id);   // the account's data stays in the cloud; this device starts clean
   store_.del(sinceKey());
-  session = null; syncInfo = { state: 'idle', at: 0, msg: '' };
+  session = null; friendsCtl = null; syncInfo = { state: 'idle', at: 0, msg: '' };
   renderAccount(); closeSheets();
   await openCamera();
   toast('Đã đăng xuất');
 };
+
+/* ---------- friends ---------- */
+let friendsCtl = null;
+const appLink = code => `${location.origin}${location.pathname.replace(/index\.html$/, '')}?add=${code}`;
+async function ensureFriends() {
+  if (!session) return null;
+  if (!friendsCtl) {
+    const [{ createFriends }, cloud] = await Promise.all([import('./friends.js'), import('./cloud.js')]);
+    friendsCtl = createFriends({ api: await cloud.friendsApi(session.user.id), ui: { toast, appLink }, root: $('frBody') });
+  }
+  return friendsCtl;
+}
+async function openFriends() {
+  try {
+    const f = await ensureFriends();
+    await f.load();
+    openSheet('friends');
+  } catch (e) { toast(navigator.onLine ? 'Không mở được danh sách bạn bè. Thử lại sau.' : 'Không có mạng. Thử lại khi có kết nối.'); }
+}
+async function refreshFriendsBadge() {
+  try {
+    const f = await ensureFriends();
+    await f.load();
+    const n = f.incomingCount();
+    $('acctFriends').textContent = n ? `Bạn bè (${n} lời mời)` : 'Bạn bè';
+  } catch { /* badge is optional */ }
+}
+// someone opened an invite link (?add=code): never send anything without asking
+async function checkPendingAdd() {
+  const code = store_.get('mg-add');
+  if (!code || $('intro').classList.contains('open')) return;
+  if (!session) { $('acctHint').hidden = false; renderAccount(); openSheet('account'); return; }
+  try {
+    const f = await ensureFriends();
+    store_.del('mg-add');
+    await f.offerFor(code);
+    await f.load();
+    openSheet('friends');
+  } catch { toast('Không mở được lời mời kết bạn. Thử lại sau.'); }
+}
+$('acctFriends').onclick = openFriends;
+$('frClose').onclick = closeSheets;
+{
+  const code = new URLSearchParams(location.search).get('add');
+  if (/^[0-9a-f]{8}$/.test(code || '')) store_.set('mg-add', code);
+  if (code !== null) history.replaceState(null, '', location.pathname);
+}
 
 /* ---------- intro + boot ---------- */
 $('btnHelp').onclick = () => openSheet('intro');
@@ -870,6 +920,7 @@ $('introGo').onclick = () => {
   closeSheets();
   try { localStorage.setItem('mg-seen', '1'); } catch {}
   if (first) openCamera();
+  checkPendingAdd();
 };
 $('shutter').onclick = capture;
 
