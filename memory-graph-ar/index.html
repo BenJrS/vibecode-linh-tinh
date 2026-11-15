@@ -21,6 +21,7 @@
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
   "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+  "supabase": "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm",
   "mindar-image": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image.prod.js",
   "mindar-image-three": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"
 } }
@@ -40,6 +41,10 @@
 <div id="top">
   <div id="pill"><i id="dot"></i><span id="status">Đang mở camera</span></div>
 </div>
+<button id="btnAccount" class="acct" aria-label="Tài khoản">
+  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8.5" r="3.7"/><path d="M4.5 20c.9-3.6 3.9-5.5 7.5-5.5s6.6 1.9 7.5 5.5"/></svg>
+  <i id="acctDot" hidden></i>
+</button>
 <div id="toast" role="status" aria-live="polite"></div>
 
 <div id="dock">
@@ -106,6 +111,31 @@
     <label class="btn quiet" id="btnImport">Khôi phục<input id="importFile" type="file" accept="application/json,.json"></label>
   </div>
   <p class="meta">Ghi chú lưu trên máy này. Sao lưu để chuyển sang máy khác hoặc phòng khi xóa dữ liệu trình duyệt.</p>
+</section>
+
+<section id="account" class="sheet" aria-label="Tài khoản">
+  <header class="sheet-head"><h2>Tài khoản</h2><button class="x" id="acctClose" aria-label="Đóng">✕</button></header>
+  <div id="acctOut">
+    <p><b>Giữ ghi chú an toàn trên mọi máy.</b></p>
+    <p class="meta">Đăng nhập để tự sao lưu và mở lại ghi chú trên điện thoại khác. Không bắt buộc, app vẫn dùng được khi chưa đăng nhập.</p>
+    <div id="stepEmail">
+      <input class="field" id="acctEmail" type="email" inputmode="email" autocomplete="email" autocapitalize="none" placeholder="Email của bạn">
+      <button class="btn primary wide" id="acctSend">Gửi mã đăng nhập</button>
+    </div>
+    <div id="stepCode" hidden>
+      <p class="meta" id="codeHint"></p>
+      <input class="field" id="acctCode" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="Mã trong email">
+      <button class="btn primary wide" id="acctVerify">Đăng nhập</button>
+      <button class="btn quiet wide" id="acctBack">Đổi email</button>
+    </div>
+  </div>
+  <div id="acctIn" hidden>
+    <p><b id="acctMail"></b></p>
+    <p class="meta" id="syncState"></p>
+    <button class="btn primary wide" id="acctSync">Đồng bộ ngay</button>
+    <button class="btn quiet wide" id="acctOutBtn">Đăng xuất</button>
+  </div>
+  <p class="meta fine"><a href="privacy.html">Chính sách riêng tư</a></p>
 </section>
 
 <section id="intro" class="sheet" aria-label="Hướng dẫn">

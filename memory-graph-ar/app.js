@@ -23,7 +23,11 @@ const store = (mode, fn) => new Promise((res, rej) => {
   r.onerror = () => rej(r.error);
 });
 const savePlace = p => store('readwrite', s => s.put(p));
-const allPlaces = () => store('readonly', s => s.getAll());
+const rawPlaces = () => store('readonly', s => s.getAll());                 // includes tombstones, for sync
+const allPlaces = async () => (await rawPlaces()).filter(p => !p.deleted);
+const getPlace = id => store('readonly', s => s.get(id));
+const dropPlace = id => store('readwrite', s => s.delete(id));
+const uuid = () => crypto.randomUUID();
 
 /* ---------- state ---------- */
 let places = [];          // { id, name, thumb, mind, memories: [{ id, x, y, text, photo, audio, audioDur, peaks, color, t }] }
@@ -56,7 +60,7 @@ function toast(msg) {
 }
 
 /* ---------- sheets ---------- */
-const sheets = ['compose', 'viewer', 'library', 'intro'];
+const sheets = ['compose', 'viewer', 'library', 'intro', 'account'];
 function openSheet(id) {
   sheets.forEach(s => $(s).classList.toggle('open', s === id));
   $('scrim').classList.toggle('on', id !== 'compose');   // compose keeps the frozen frame clear
@@ -377,6 +381,7 @@ function leavePick() {
   $('stage').style.transform = '';
   $('ar').style.visibility = '';
   closeSheets();
+  if (pendingReload) { pendingReload = false; setTimeout(openCamera, 50); }   // a sync finished while pinning
 }
 function cancelPick() {
   const hadAR = !!ar;
@@ -551,13 +556,16 @@ $('composeSave').onclick = async () => {
   const text = $('memText').value.trim();
   if (!text && !c.photo && !c.audio) return toast('Viết gì đó, thêm ảnh hoặc ghi âm trước khi ghim.');
   const s = shot;
-  const mem = { id: Date.now(), x: s.pos.x, y: s.pos.y, text, photo: c.photo, audio: c.audio, audioDur: c.dur, peaks: c.peaks, color: c.color, t: Date.now() };
+  const mem = { id: uuid(), x: s.pos.x, y: s.pos.y, text, photo: c.photo, audio: c.audio, audioDur: c.dur, peaks: c.peaks, color: c.color, t: Date.now(), up: false };
   if (s.entry) {   // joins a place that is already known
-    s.entry.place.memories.push(mem);
-    await savePlace(s.entry.place);
+    const fresh = (await getPlace(s.entry.place.id)) || s.entry.place;   // sync may have added memories since this place was loaded
+    fresh.memories.push(mem);
+    await savePlace(fresh);
+    if (fresh !== s.entry.place) s.entry.place.memories.push(mem);
     addCard(s.entry, mem);
     cancelPick();
     updateLib();
+    scheduleSync();
     return toast('Đã ghim');
   }
   // brand-new place: learn this frame, then restart the camera with it as a target
@@ -569,10 +577,11 @@ $('composeSave').onclick = async () => {
     const { Compiler } = await lazy();
     const mind = await compileFrame(Compiler, frame, p => $('busyBar').style.width = p + '%');
     const name = 'Chỗ ' + new Date().toLocaleString('vi-VN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
-    await savePlace({ id: Date.now(), name, thumb: frame.toDataURL('image/jpeg', 0.6), mind, memories: [mem] });
+    await savePlace({ id: uuid(), name, thumb: frame.toDataURL('image/jpeg', 0.6), mind, memories: [mem], dirty: true, mindUp: false });
     try { navigator.storage?.persist?.(); } catch {}
     leavePick();
     await openCamera();
+    scheduleSync();
     toast('Đã ghim');
   } catch {
     leavePick();
@@ -638,10 +647,14 @@ $('viewDelete').onclick = async () => {
   const del = $('viewDelete');
   if (!del.dataset.sure) { del.dataset.sure = '1'; del.textContent = 'Bấm lại để xóa'; return; }
   const { entry, mem } = viewing;
-  entry.place.memories = entry.place.memories.filter(m => m !== mem);
-  await savePlace(entry.place);
+  const p = (await getPlace(entry.place.id)) || entry.place;
+  p.memories = p.memories.filter(m => m.id !== mem.id);
+  if (mem.up) p.tomb = [...(p.tomb || []), { id: mem.id }];   // already in the cloud: tell it
+  await savePlace(p);
+  entry.place.memories = entry.place.memories.filter(m => m.id !== mem.id);
   removeCard(entry, mem);
   closeSheets(); updateLib(); setStatus();
+  scheduleSync();
   toast('Đã xóa');
 };
 
@@ -655,15 +668,17 @@ function renderLibrary() {
     li.querySelector('img').src = p.thumb;
     const input = li.querySelector('input');
     input.value = p.name;
-    input.onchange = async () => { p.name = input.value.trim() || p.name; input.value = p.name; await savePlace(p); };
+    input.onchange = async () => { p.name = input.value.trim() || p.name; input.value = p.name; p.dirty = true; await savePlace(p); scheduleSync(); };
     li.querySelector('.count').textContent = p.memories.length + ' ghi chú';
     const del = li.querySelector('.del');
     del.onclick = async () => {
       if (!del.classList.contains('sure')) { del.classList.add('sure'); del.textContent = 'Xóa thật?'; return; }
-      await store('readwrite', s => s.delete(p.id));
+      if (p.mindUp) await savePlace({ ...p, deleted: true });   // tombstone until the cloud copy is removed
+      else await dropPlace(p.id);                               // never left this device
       closeSheets();
       toast('Đã xóa chỗ này');
       openCamera();
+      scheduleSync();
     };
     ul.append(li);
   }
@@ -691,11 +706,161 @@ $('importFile').onchange = async () => {
   try {
     const data = JSON.parse(await f.text());
     if (data.app !== 'memory-graph' || !Array.isArray(data.places)) throw 0;
-    for (const p of data.places) await savePlace({ ...p, mind: unb64(p.mind) });
+    for (const p of data.places) await savePlace(freshIds({ ...p, mind: unb64(p.mind) }));
     closeSheets();
     toast(`Đã khôi phục ${data.places.length} chỗ`);
     openCamera();
+    scheduleSync();
   } catch { toast('File này không phải bản sao lưu của Memory-Graph.'); }
+};
+
+/* ---------- ids, account, sync ---------- */
+const isUuid = s => typeof s === 'string' && /^[0-9a-f-]{36}$/.test(s);
+function freshIds(p) {   // older builds used numeric ids; the cloud needs uuids. Also used for restored backups.
+  if (!isUuid(p.id)) p.id = uuid();
+  p.memories = (p.memories || []).map(m => ({ ...m, id: isUuid(m.id) ? m.id : uuid(), up: false }));
+  Object.assign(p, { dirty: true, mindUp: false, tomb: [] });
+  delete p.deleted;
+  return p;
+}
+async function migrateIds() {
+  for (const p of await rawPlaces()) {
+    if (isUuid(p.id) && (p.memories || []).every(m => isUuid(m.id))) continue;
+    const old = p.id;
+    await savePlace(freshIds(p));
+    if (old !== p.id) await dropPlace(old);
+  }
+}
+
+let session = null, syncT = 0, syncing = false, syncAgain = false, pendingReload = false;
+let syncInfo = { state: 'idle', at: 0, msg: '' };
+const sinceKey = () => `mg-since-${session.user.id}`;
+const store_ = { get: k => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} }, del: k => { try { localStorage.removeItem(k); } catch {} } };
+
+function scheduleSync(delay = 1500) {
+  if (!session) return;
+  clearTimeout(syncT);
+  syncT = setTimeout(doSync, delay);
+}
+function explain(e) {
+  const m = `${e?.code || ''} ${e?.message || e}`;
+  if (/PGRST205|schema cache|does not exist/i.test(m)) return 'Máy chủ chưa được thiết lập: thiếu bảng dữ liệu.';
+  if (/row-level security|42501/i.test(m)) return 'Máy chủ từ chối quyền ghi. Kiểm tra quy tắc bảo mật.';
+  if (/Bucket not found/i.test(m)) return 'Máy chủ chưa được thiết lập: thiếu kho lưu file.';
+  return 'Chưa đồng bộ được. Sẽ thử lại khi có mạng.';
+}
+async function doSync() {
+  if (!session) return false;
+  if (!navigator.onLine) { syncInfo = { state: 'offline', at: syncInfo.at, msg: '' }; renderSync(); return false; }
+  if (mode !== 'live' || busyCamera) { scheduleSync(4000); return false; }   // never swap data under an open pin
+  if (syncing) { syncAgain = true; return false; }
+  syncing = true;
+  syncInfo = { ...syncInfo, state: 'syncing' }; renderSync();
+  let ok = false;
+  try {
+    const [{ runSync }, cloud] = await Promise.all([import('./sync.js'), import('./cloud.js')]);
+    const key = sinceKey();
+    const changed = await runSync({
+      remote: await cloud.remote(), uid: session.user.id,
+      local: { raw: rawPlaces, put: savePlace, remove: dropPlace, getSince: () => store_.get(key), setSince: v => store_.set(key, v) },
+    });
+    ok = true;
+    syncInfo = { state: 'ok', at: Date.now(), msg: '' };
+    if (changed) { if (mode === 'live') { await openCamera(); updateLib(); } else pendingReload = true; }
+  } catch (e) {
+    console.warn('sync failed', e);
+    syncInfo = { state: 'err', at: syncInfo.at, msg: explain(e) };
+  } finally {
+    syncing = false;
+    renderSync();
+    if (syncAgain) { syncAgain = false; scheduleSync(500); }
+  }
+  return ok;
+}
+addEventListener('online', () => scheduleSync(300));
+addEventListener('offline', () => { if (session) { syncInfo = { ...syncInfo, state: 'offline' }; renderSync(); } });
+
+function renderSync() {
+  const t = new Date(syncInfo.at).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+  $('syncState').textContent = { idle: 'Chưa đồng bộ.', syncing: 'Đang đồng bộ…', ok: `Đã đồng bộ lúc ${t}.`,
+    offline: 'Đang offline. Sẽ đồng bộ khi có mạng.', err: syncInfo.msg }[syncInfo.state];
+  $('acctDot').dataset.state = syncInfo.state;
+}
+function renderAccount() {
+  $('acctOut').hidden = !!session;
+  $('acctIn').hidden = !session;
+  $('acctDot').hidden = !session;
+  if (session) { $('acctMail').textContent = session.user.email; renderSync(); }
+  else if (!$('acctOut').dataset.keep) { $('stepEmail').hidden = false; $('stepCode').hidden = true; }
+  const b = $('acctOutBtn');
+  b.dataset.sure = ''; b.textContent = 'Đăng xuất';
+}
+async function initAccount() {
+  try {
+    const cloud = await import('./cloud.js');
+    session = await cloud.getSession();
+    renderAccount();
+    cloud.onAuthChange(s => { const was = session; session = s; renderAccount(); if (s && !was) scheduleSync(300); });
+    if (session) scheduleSync(2500);
+  } catch { /* offline on first load: stay local-only */ }
+}
+
+$('btnAccount').onclick = () => { renderAccount(); openSheet('account'); };
+$('acctClose').onclick = closeSheets;
+let codeEmail = '';
+$('acctSend').onclick = async () => {
+  const email = $('acctEmail').value.trim();
+  if (!/^\S+@\S+\.\S+$/.test(email)) return toast('Nhập đúng địa chỉ email, ví dụ ten@gmail.com.');
+  const b = $('acctSend');
+  b.disabled = true;
+  try {
+    await (await import('./cloud.js')).sendCode(email);
+    codeEmail = email;
+    $('codeHint').textContent = `Đã gửi mã tới ${email}. Nếu chưa thấy, kiểm tra thư rác.`;
+    $('stepEmail').hidden = true; $('stepCode').hidden = false;
+    $('acctOut').dataset.keep = '1';
+    $('acctCode').value = ''; $('acctCode').focus();
+  } catch (e) {
+    toast(e?.status === 429 || /rate|seconds/i.test(e?.message || '') ? 'Gửi mã quá nhanh. Đợi một phút rồi thử lại.' : 'Không gửi được mã. Kiểm tra email và mạng rồi thử lại.');
+  }
+  b.disabled = false;
+};
+$('acctBack').onclick = () => { delete $('acctOut').dataset.keep; $('stepEmail').hidden = false; $('stepCode').hidden = true; };
+$('acctVerify').onclick = async () => {
+  const token = $('acctCode').value.replace(/\D/g, '');
+  if (token.length < 6) return toast('Nhập mã trong email (6 số trở lên).');
+  const b = $('acctVerify');
+  b.disabled = true;
+  try {
+    session = await (await import('./cloud.js')).verifyCode(codeEmail, token);
+    delete $('acctOut').dataset.keep;
+    renderAccount(); closeSheets();
+    toast('Đã đăng nhập');
+    scheduleSync(300);
+  } catch { toast('Mã sai hoặc đã hết hạn. Bấm Đổi email để nhận mã mới.'); }
+  b.disabled = false;
+};
+$('acctSync').onclick = async () => { clearTimeout(syncT); await doSync(); };
+$('acctOutBtn').onclick = async () => {
+  const b = $('acctOutBtn');
+  if (!b.dataset.sure) {
+    b.disabled = true; b.textContent = 'Đang lưu lên máy chủ…';
+    clearTimeout(syncT);
+    const saved = await doSync();
+    b.disabled = false;
+    if (!saved) {   // do not silently throw away notes that never reached the cloud
+      b.dataset.sure = '1';
+      b.textContent = 'Chưa lưu hết. Bấm lại để đăng xuất và xóa';
+      return;
+    }
+  }
+  try { await (await import('./cloud.js')).signOut(); } catch {}
+  for (const p of await rawPlaces()) await dropPlace(p.id);   // the account's data stays in the cloud; this device starts clean
+  store_.del(sinceKey());
+  session = null; syncInfo = { state: 'idle', at: 0, msg: '' };
+  renderAccount(); closeSheets();
+  await openCamera();
+  toast('Đã đăng xuất');
 };
 
 /* ---------- intro + boot ---------- */
@@ -712,9 +877,11 @@ try { navigator.serviceWorker?.register('sw.js'); } catch {}
 await Promise.all([
   document.fonts.load(`700 40px ${HAND}`, 'Viết ắẳằẵặ'), document.fonts.load(`400 22px ${UI}`, 'ắẳằ'), document.fonts.load(`600 26px ${UI}`, '0123'),
 ]).catch(() => {});
+await migrateIds();
 places = await allPlaces();
 updateLib();
 setStatus();
 let seen = false;
 try { seen = !!localStorage.getItem('mg-seen'); } catch {}
 if (seen) openCamera(); else openSheet('intro');
+initAccount();

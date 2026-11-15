@@ -1,7 +1,7 @@
 // Offline support. Our own files: network first (so updates land), cache as fallback.
 // Pinned CDN files (three, MindAR, fonts): cache first.
-const CACHE = 'memory-graph-v1';
-const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
+const CACHE = 'memory-graph-v2';
+const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'config.js', 'cloud.js', 'sync.js', 'privacy.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 const CDN = ['cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 
 self.addEventListener('install', e => {
