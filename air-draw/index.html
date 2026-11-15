@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Air-Draw</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #000; color: #fff;
+    font-family: -apple-system, system-ui, sans-serif; overflow: hidden; }
+  #stage { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: #111; }
+  #stage.mirror .layer { transform: scaleX(-1); }
+  .layer { position: absolute; inset: 0; width: 100%; height: 100%; }
+  video.layer { object-fit: fill; }
+  #hud { position: fixed; left: 0; right: 0; top: 0; padding: calc(env(safe-area-inset-top) + 10px) 14px 10px;
+    display: flex; align-items: center; gap: 10px; pointer-events: none;
+    background: linear-gradient(#000a, transparent); }
+  #swatch { width: 18px; height: 18px; border-radius: 50%; box-shadow: 0 0 12px currentColor; background: currentColor; }
+  #mode { font-size: 14px; font-weight: 600; letter-spacing: .02em; }
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; display: flex; justify-content: center; gap: 10px;
+    padding: 10px 14px calc(env(safe-area-inset-bottom) + 14px); }
+  button { font: inherit; font-size: 14px; color: #fff; background: #ffffff1f; border: 1px solid #ffffff40;
+    border-radius: 999px; padding: 10px 16px; backdrop-filter: blur(8px); }
+  button:active { background: #ffffff40; }
+  #hint { position: fixed; left: 0; right: 0; bottom: calc(env(safe-area-inset-bottom) + 70px); text-align: center;
+    font-size: 12px; opacity: .75; padding: 0 16px; pointer-events: none; text-shadow: 0 1px 4px #000; }
+  #splash { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; background: #000; text-align: center; padding: 24px; z-index: 5; }
+  #splash h1 { margin: 0; font-size: 34px; color: #00e5ff; text-shadow: 0 0 18px #00e5ff; }
+  #splash p { margin: 0; opacity: .8; max-width: 360px; line-height: 1.5; }
+  #splash button { background: #00e5ff; color: #000; font-weight: 700; border: 0; padding: 14px 28px; font-size: 16px; }
+</style>
+</head>
+<body>
+<div id="splash">
+  <h1>Air-Draw</h1>
+  <p>☝️ Giơ ngón trỏ để vẽ<br>✊ Nắm tay (giữ ~0.5s) để xóa<br>🤏 Chụm ngón cái + trỏ để đổi màu</p>
+  <button id="start">Bật camera</button>
+  <p id="err" style="color:#ff6b6b"></p>
+</div>
+
+<div id="stage" class="mirror">
+  <video id="video" class="layer" playsinline muted></video>
+  <canvas id="ink" class="layer"></canvas>
+  <canvas id="fx" class="layer"></canvas>
+</div>
+
+<div id="hud"><div id="swatch"></div><div id="mode">Đang tải model…</div></div>
+<div id="hint">☝️ vẽ · ✊ xóa · 🤏 đổi màu</div>
+<div id="bar">
+  <button id="flip">Đổi camera</button>
+  <button id="clear">Xóa</button>
+  <button id="snap">Chụp ảnh</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
+<script>
+const COLORS = ['#ff2e93', '#00e5ff', '#b6ff00', '#ffb300', '#a259ff', '#ffffff'];
+const $ = id => document.getElementById(id);
+const video = $('video'), ink = $('ink'), fx = $('fx'), stage = $('stage');
+const ictx = ink.getContext('2d'), fctx = fx.getContext('2d');
+
+let facing = 'user', stream = null, hands = null, running = false;
+let colorIdx = 0, last = null, smooth = null;
+let fistSince = 0, lastPinch = 0, pinchWas = false;
+
+function setColor(i) {
+  colorIdx = i % COLORS.length;
+  $('swatch').style.color = COLORS[colorIdx];
+}
+setColor(0);
+
+function setMode(t) { $('mode').textContent = t; }
+
+function fitStage() {
+  const ar = (video.videoWidth || 3) / (video.videoHeight || 4);
+  const w = Math.min(innerWidth, innerHeight * ar);
+  stage.style.width = w + 'px';
+  stage.style.height = (w / ar) + 'px';
+}
+addEventListener('resize', fitStage);
+
+async function startCamera() {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+  video.srcObject = stream;
+  await video.play();
+  ink.width = fx.width = video.videoWidth;
+  ink.height = fx.height = video.videoHeight;
+  stage.classList.toggle('mirror', facing === 'user');
+  fitStage();
+  last = smooth = null;
+}
+
+// finger extended = tip farther from wrist than its PIP joint (rotation-independent)
+const d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const extended = (p, tip, pip) => d(p[tip], p[0]) > d(p[pip], p[0]) * 1.05;
+
+function classify(p) {
+  const size = d(p[0], p[9]);                 // wrist -> middle MCP
+  const pinch = d(p[4], p[8]) < size * 0.35;
+  const idx = extended(p, 8, 6), mid = extended(p, 12, 10),
+        ring = extended(p, 16, 14), pnk = extended(p, 20, 18);
+  if (pinch) return 'pinch';
+  if (idx && !mid && !ring && !pnk) return 'draw';
+  if (!idx && !mid && !ring && !pnk) return 'fist';
+  return 'idle';
+}
+
+function drawSegment(a, b, c) {
+  ictx.lineCap = ictx.lineJoin = 'round';
+  ictx.strokeStyle = COLORS[colorIdx];
+  ictx.shadowColor = COLORS[colorIdx];
+  ictx.beginPath();
+  ictx.moveTo(a.x, a.y);
+  ictx.quadraticCurveTo(b.x, b.y, c.x, c.y);
+  ictx.shadowBlur = 28; ictx.lineWidth = 9; ictx.globalAlpha = .55; ictx.stroke();   // glow
+  ictx.shadowBlur = 8;  ictx.lineWidth = 4; ictx.globalAlpha = 1;   ictx.stroke();   // core
+  ictx.strokeStyle = '#fff'; ictx.shadowBlur = 0; ictx.lineWidth = 1.5; ictx.globalAlpha = .9; ictx.stroke();
+  ictx.globalAlpha = 1;
+}
+
+function onResults(res) {
+  fctx.clearRect(0, 0, fx.width, fx.height);
+  const p = res.multiHandLandmarks && res.multiHandLandmarks[0];
+  const now = performance.now();
+  if (!p) { last = smooth = null; fistSince = 0; setMode('Không thấy tay'); return; }
+
+  const g = classify(p);
+  const tip = { x: p[8].x * ink.width, y: p[8].y * ink.height };
+  smooth = smooth ? { x: smooth.x + (tip.x - smooth.x) * 0.5, y: smooth.y + (tip.y - smooth.y) * 0.5 } : tip;
+
+  if (g !== 'fist') fistSince = 0;
+  if (g !== 'pinch') pinchWas = false;
+
+  if (g === 'draw') {
+    setMode('Đang vẽ');
+    if (last) {
+      const mid = { x: (last.x + smooth.x) / 2, y: (last.y + smooth.y) / 2 };
+      drawSegment(last.mid || last, last, mid);
+      last = { x: smooth.x, y: smooth.y, mid };
+    } else last = { x: smooth.x, y: smooth.y };
+    fctx.fillStyle = COLORS[colorIdx]; fctx.shadowColor = COLORS[colorIdx]; fctx.shadowBlur = 20;
+    fctx.beginPath(); fctx.arc(smooth.x, smooth.y, 9, 0, 7); fctx.fill();
+  } else {
+    last = null;
+    if (g === 'pinch') {
+      setMode('Chụm: đổi màu');
+      if (!pinchWas && now - lastPinch > 700) { setColor(colorIdx + 1); lastPinch = now; }
+      pinchWas = true;
+    } else if (g === 'fist') {
+      if (!fistSince) fistSince = now;
+      const t = (now - fistSince) / 500;
+      setMode(t < 1 ? 'Nắm tay… giữ để xóa' : 'Đã xóa');
+      if (t >= 1) { ictx.clearRect(0, 0, ink.width, ink.height); }
+    } else setMode('Giơ ngón trỏ để vẽ');
+  }
+}
+
+async function loop() {
+  if (!running) return;
+  if (video.readyState >= 2) await hands.send({ image: video });
+  (video.requestVideoFrameCallback ? video.requestVideoFrameCallback.bind(video) : requestAnimationFrame)(loop);
+}
+
+$('start').onclick = async () => {
+  try {
+    hands = new Hands({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${f}` });
+    hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.5 });
+    hands.onResults(onResults);
+    await startCamera();
+    $('splash').style.display = 'none';
+    running = true; loop();
+  } catch (e) {
+    $('err').textContent = 'Lỗi: ' + e.message + ' (camera cần https hoặc localhost)';
+  }
+};
+$('flip').onclick = async () => { facing = facing === 'user' ? 'environment' : 'user'; await startCamera(); };
+$('clear').onclick = () => ictx.clearRect(0, 0, ink.width, ink.height);
+$('snap').onclick = () => {
+  const c = document.createElement('canvas'); c.width = ink.width; c.height = ink.height;
+  const x = c.getContext('2d');
+  if (facing === 'user') { x.translate(c.width, 0); x.scale(-1, 1); }
+  x.drawImage(video, 0, 0, c.width, c.height);
+  x.drawImage(ink, 0, 0);
+  const a = document.createElement('a');
+  a.href = c.toDataURL('image/png'); a.download = 'air-draw-' + Date.now() + '.png'; a.click();
+};
+</script>
+</body>
+</html>

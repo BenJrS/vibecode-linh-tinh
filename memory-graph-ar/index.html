@@ -1,0 +1,515 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Memory-Graph AR</title>
+<style>
+  :root { color-scheme: dark; --bg: #0c0b10; --panel: #17151d; --line: #2c2936; --ink: #f3efe6; --dim: #9a94a6; --glow: #ffc46b; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font: 16px/1.45 -apple-system, system-ui, sans-serif; overflow: hidden; }
+  button, input, textarea { font: inherit; color: inherit; }
+  button, .btn { border: 1px solid var(--line); background: var(--panel); border-radius: 14px; padding: 12px 16px;
+    cursor: pointer; text-align: center; }
+  button:disabled { opacity: .4; }
+  .primary { background: var(--glow); border-color: var(--glow); color: #1a1408; font-weight: 700; }
+  textarea { width: 100%; background: #0f0e14; border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+  input[type=file] { display: none; }
+
+  /* AR layer: position:fixed makes a stacking context so MindAR's z-index:-2 video stays visible */
+  #ar { position: fixed; inset: 0; z-index: 0; overflow: hidden; }
+  #pin { position: fixed; z-index: 1; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%;
+    background: var(--glow); box-shadow: 0 0 0 4px #fff9, 0 0 18px var(--glow); pointer-events: none; }
+
+  #hud { position: fixed; z-index: 3; left: 0; right: 0; top: 0; display: flex; align-items: center; justify-content: space-between;
+    padding: calc(env(safe-area-inset-top) + 10px) 14px 24px; background: linear-gradient(#000b, transparent); pointer-events: none; }
+  #hud b { font-size: 15px; text-shadow: 0 1px 6px #000; }
+  #hud b span { color: var(--glow); }
+  #hud button { pointer-events: auto; padding: 8px 14px; font-size: 14px; background: #0009; backdrop-filter: blur(8px); }
+
+  #dock { position: fixed; z-index: 3; left: 0; right: 0; bottom: 0; display: grid; justify-items: center; gap: 14px;
+    padding: 28px 16px calc(env(safe-area-inset-bottom) + 22px); background: linear-gradient(transparent, #000b); pointer-events: none; }
+  #status { font-size: 14px; font-weight: 600; text-align: center; text-shadow: 0 1px 6px #000; }
+  #dock button { pointer-events: auto; }
+  #shutter { width: 76px; height: 76px; padding: 0; border-radius: 50%; border: 4px solid #fff; background: var(--glow);
+    box-shadow: inset 0 0 0 4px #0c0b10; }
+  #shutter:active { transform: scale(.93); }
+  #reshoot { background: #0009; backdrop-filter: blur(8px); }
+  body[data-mode=live] #reshoot, body[data-mode=pick] #shutter { display: none; }
+
+  .sheet { position: fixed; z-index: 4; left: 0; right: 0; bottom: 0; background: var(--panel); border-top: 1px solid var(--line);
+    border-radius: 22px 22px 0 0; padding: 18px 18px calc(env(safe-area-inset-bottom) + 18px); display: grid; gap: 12px;
+    max-height: 85vh; overflow-y: auto; }
+  .sheet > * { max-width: 480px; width: 100%; margin: 0 auto; }
+  .sheet h3 { margin: 0; font-size: 17px; }
+  .sheet img { border-radius: 12px; max-height: 40vh; object-fit: contain; background: #000; }
+  .sheet audio { height: 40px; }
+  .row { display: flex; gap: 10px; }
+  .row > * { flex: 1; }
+  #viewText { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #viewDate, .sub { margin: 0; color: var(--dim); font-size: 14px; }
+  .danger { color: #ff8a80; }
+
+  #places { list-style: none; margin: 0 auto; padding: 0; display: grid; gap: 10px; }
+  #places li { display: flex; align-items: center; gap: 12px; background: #0f0e14; border: 1px solid var(--line);
+    border-radius: 16px; padding: 10px; }
+  #places img { width: 56px; height: 56px; object-fit: cover; border-radius: 10px; flex: none; }
+  #places div { flex: 1; min-width: 0; }
+  #places b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #places span { color: var(--dim); font-size: 14px; }
+  #places button { border: 0; background: none; color: var(--dim); padding: 8px 10px; }
+
+  #gate, #busy { position: fixed; inset: 0; z-index: 9; display: grid; place-content: center; justify-items: center; gap: 14px;
+    text-align: center; padding: 24px; }
+  #gate { background: var(--bg); }
+  #gate h1 { margin: 0; font-size: 30px; letter-spacing: -.02em; }
+  #gate h1 span { color: var(--glow); text-shadow: 0 0 22px #ffc46b88; }
+  #gate p { margin: 0; color: var(--dim); max-width: 340px; }
+  #busy { background: #000c; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+  "mindar-image": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image.prod.js",
+  "mindar-image-three": "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-three.prod.js"
+} }
+</script>
+</head>
+<body data-mode="live">
+<div id="ar"></div>
+<div id="pin" hidden></div>
+
+<div id="hud">
+  <b>Memory-Graph <span>AR</span></b>
+  <button id="openPlaces">Mốc đã lưu</button>
+</div>
+
+<div id="dock">
+  <div id="status">Đang mở camera…</div>
+  <button id="shutter" aria-label="Chụp để ghim"></button>
+  <button id="reshoot">✕ Chụp lại</button>
+</div>
+
+<div id="compose" class="sheet" hidden>
+  <h3>Ghim ký ức vào đây</h3>
+  <textarea id="memText" rows="3" maxlength="400" placeholder="Viết gì đó cho lần sau quay lại…"></textarea>
+  <img id="memPreview" hidden alt="">
+  <audio id="memAudio" controls hidden></audio>
+  <div class="row"><label class="btn">Thêm ảnh<input id="memPhoto" type="file" accept="image/*"></label><button id="memRec">Ghi âm</button></div>
+  <div class="row"><button id="memCancel">Hủy</button><button id="memSave" class="primary">Ghim</button></div>
+</div>
+
+<div id="viewer" class="sheet" hidden>
+  <img id="viewPhoto" hidden alt="">
+  <audio id="viewAudio" controls hidden></audio>
+  <p id="viewText"></p>
+  <p id="viewDate"></p>
+  <div class="row"><button id="viewDelete" class="danger">Xóa</button><button id="viewClose">Đóng</button></div>
+</div>
+
+<div id="placesSheet" class="sheet" hidden>
+  <h3>Mốc đã lưu</h3>
+  <ul id="places"></ul>
+  <p id="empty" class="sub">Chưa có mốc nào. Lia camera tới chỗ muốn ghim rồi bấm chụp.</p>
+  <button id="closePlaces">Đóng</button>
+</div>
+
+<div id="gate" hidden>
+  <h1>Memory-Graph <span>AR</span></h1>
+  <p>Không mở được camera. Trang cần chạy trên https hoặc localhost và được cấp quyền camera.</p>
+  <button id="retry" class="primary">Bật camera</button>
+</div>
+
+<div id="busy" hidden></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { MindARThree } from 'mindar-image-three';
+import { Compiler } from 'mindar-image';
+
+const $ = id => document.getElementById(id);
+const CARD_W = 0.3, FLOAT_Z = 0.15;   // anchor units: 1 = width of the captured frame
+
+/* ---------- storage: one IndexedDB store, one record per place ---------- */
+const db = await new Promise((res, rej) => {
+  const r = indexedDB.open('memory-graph-ar', 1);
+  r.onupgradeneeded = () => r.result.createObjectStore('places', { keyPath: 'id' });
+  r.onsuccess = () => res(r.result);
+  r.onerror = () => rej(r.error);
+});
+const store = (mode, fn) => new Promise((res, rej) => {
+  const r = fn(db.transaction('places', mode).objectStore('places'));
+  r.onsuccess = () => res(r.result);
+  r.onerror = () => rej(r.error);
+});
+const savePlace = p => store('readwrite', s => s.put(p));
+
+let places = [];   // { id, name, thumb, mind: Uint8Array, memories: [{ id, x, y, text, photo, audio, audioDur, t }] }
+let ar = null;     // { m: MindARThree, entries: [{ place, group, cards }], active: index | -1, ready }
+// shot: the frozen frame being pinned to. Either { entry, matrix } (a known place was in view)
+// or { frame, mind: Promise, progress } (new place, compiling in the background); plus pos once tapped.
+let shot = null;
+let viewing = null, photoData = null;
+let rec = null, audioData = null, audioDur = 0;   // rec: active MediaRecorder
+
+/* ---------- helpers ---------- */
+const busy = msg => { $('busy').hidden = !msg; $('busy').textContent = msg || ''; };
+const fmtDate = t => new Date(t).toLocaleDateString('vi-VN', { day: 'numeric', month: 'short', year: 'numeric' });
+const fmtDur = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+const stopRec = () => { if (rec?.state === 'recording') rec.stop(); };
+const hideViewer = () => { $('viewAudio').pause(); $('viewer').hidden = true; };
+const hideCompose = () => { $('compose').hidden = true; stopRec(); $('memAudio').pause(); };
+
+function updateStatus() {
+  const n = ar?.active >= 0 ? ar.entries[ar.active].place.memories.length : 0;
+  $('status').textContent = shot ? 'Chạm vào chỗ muốn đặt ghi chú'
+    : ar?.active >= 0 ? `📍 ${n} ký ức ở đây · bấm chụp để ghim thêm`
+    : 'Lia tới chỗ muốn ghim rồi bấm chụp';
+  document.body.dataset.mode = shot ? 'pick' : 'live';
+}
+
+async function loadImage(src) {
+  const im = new Image();
+  im.src = src;
+  await im.decode();
+  return im;
+}
+// Draw an image or video frame into a canvas no larger than `max` on its long side.
+function toCanvas(src, max) {
+  const w = src.videoWidth || src.width, h = src.videoHeight || src.height;
+  const s = Math.min(1, max / Math.max(w, h));
+  const c = document.createElement('canvas');
+  c.width = Math.round(w * s);
+  c.height = Math.round(h * s);
+  c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+  return c;
+}
+
+/* ---------- memory cards (canvas texture on a camera-facing sprite) ---------- */
+function wrapText(g, text, x, y, maxW, lineH, maxLines) {
+  const lines = [];
+  let line = '';
+  for (const w of text.split(/\s+/)) {
+    const t = line ? line + ' ' + w : w;
+    if (line && g.measureText(t).width > maxW) { lines.push(line); line = w; } else line = t;
+  }
+  lines.push(line);
+  if (lines.length > maxLines) { lines.length = maxLines; lines[maxLines - 1] += '…'; }
+  lines.forEach((l, i) => g.fillText(l, x, y + i * lineH));
+}
+
+function drawCard(mem, img, cv = document.createElement('canvas')) {
+  const W = 512, H = mem.photo ? 628 : 300;
+  cv.width = W; cv.height = H;
+  const g = cv.getContext('2d');
+  g.shadowColor = '#ffc46b'; g.shadowBlur = 18;
+  g.beginPath(); g.roundRect(14, 14, W - 28, H - 28, 26);
+  g.fillStyle = mem.photo ? '#fbf7ef' : '#17151dee';
+  g.fill();
+  g.shadowBlur = 0;
+  g.textBaseline = 'top';
+  const meta = (mem.audio ? `🎙 ${fmtDur(mem.audioDur)} · ` : '') + fmtDate(mem.t);
+  if (mem.photo) {
+    g.fillStyle = '#d9d2c5'; g.fillRect(38, 38, 436, 436);
+    if (img) {
+      const s = Math.min(img.width, img.height);
+      g.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 38, 38, 436, 436);
+    }
+    g.fillStyle = '#2b2620'; g.font = '600 28px system-ui, sans-serif';
+    wrapText(g, mem.text || meta, 40, 492, 432, 36, mem.text ? 2 : 1);
+    if (mem.text) { g.fillStyle = '#8a8377'; g.font = '22px system-ui, sans-serif'; g.fillText(meta, 40, 572); }
+  } else {
+    g.strokeStyle = '#ffc46b'; g.lineWidth = 2; g.stroke();
+    g.fillStyle = '#f3efe6'; g.font = '600 32px system-ui, sans-serif';
+    wrapText(g, mem.text || 'Lời nhắn thoại', 44, 44, 424, 42, 4);
+    g.fillStyle = '#ffc46b'; g.font = '22px system-ui, sans-serif';
+    g.fillText(meta, 44, H - 68);
+  }
+  return cv;
+}
+
+function addCard(entry, mem) {
+  const cv = drawCard(mem);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
+  sprite.scale.set(CARD_W, CARD_W * cv.height / cv.width, 1);
+  sprite.position.set(mem.x, mem.y, FLOAT_Z);
+  sprite.renderOrder = 1;
+  sprite.userData = { mem, phase: Math.random() * 6.28 };
+  const stem = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(mem.x, mem.y, 0), new THREE.Vector3(mem.x, mem.y, FLOAT_Z)]),
+    new THREE.LineBasicMaterial({ color: 0xffc46b, transparent: true, opacity: 0.7 }));
+  entry.group.add(stem, sprite);
+  entry.cards.push({ sprite, stem });
+  if (mem.photo) loadImage(mem.photo).then(im => { drawCard(mem, im, cv); tex.needsUpdate = true; });
+}
+
+/* ---------- AR session: camera is always live, every saved place is a target ---------- */
+// Each place was compiled alone; join them so one camera session recognises any of them.
+function mergeTargets() {
+  const c = new Compiler();
+  c.data = places.flatMap(p => new Compiler().importData(p.mind));
+  return c.exportData();
+}
+
+function stopSession() {
+  if (!ar) return;
+  ar.m.renderer.setAnimationLoop(null);
+  try { ar.m.stop(); } catch {}
+  ar.m.renderer.dispose();
+  ar.m.renderer.forceContextLoss();
+  ar = null;
+  $('ar').innerHTML = '';
+}
+
+// (Re)start the camera with the current set of places. Called on load and whenever a place is added or removed.
+async function startSession() {
+  stopSession();
+  places = await store('readonly', s => s.getAll());
+  const url = URL.createObjectURL(new Blob([mergeTargets()]));
+  const m = new MindARThree({ container: $('ar'), imageTargetSrc: url, maxTrack: 1,
+    uiLoading: 'no', uiScanning: 'no', uiError: 'no' });
+  ar = { m, entries: [], active: -1, ready: false };
+  places.forEach((place, i) => {
+    const anchor = m.addAnchor(i);
+    const entry = { place, group: anchor.group, cards: [] };
+    place.memories.forEach(mem => addCard(entry, mem));
+    anchor.onTargetFound = () => { ar.active = i; updateStatus(); };
+    anchor.onTargetLost = () => { if (ar.active === i) { ar.active = -1; updateStatus(); } };
+    ar.entries.push(entry);
+  });
+  try {
+    await m.start();
+  } catch {
+    stopSession();
+    $('gate').hidden = false;
+    return;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+  $('gate').hidden = true;
+  ar.ready = true;
+  updateStatus();
+  m.renderer.setAnimationLoop(t => {
+    for (const e of ar.entries) for (const { sprite } of e.cards)
+      sprite.position.z = FLOAT_Z + Math.sin(t / 900 + sprite.userData.phase) * 0.008;
+    m.renderer.render(m.scene, m.camera);
+  });
+}
+
+/* ---------- shutter: freeze the frame, then pick a spot on it ---------- */
+async function compileFrame(s) {
+  const compiler = new Compiler();
+  await compiler.compileImageTargets([s.frame], p => {
+    s.progress = p;
+    if (!$('busy').hidden) busy(`Đang neo vào không gian… ${Math.round(p)}%`);
+  });
+  return compiler.exportData();
+}
+
+$('shutter').onclick = () => {
+  if (!ar?.ready || shot) return;
+  hideViewer();
+  const video = ar.m.video;
+  video.pause();
+  if (ar.active >= 0) {
+    // a known place is in view: the new memory joins it, positioned with the pose at capture time
+    const entry = ar.entries[ar.active];
+    shot = { entry, matrix: entry.group.matrix.clone() };
+  } else {
+    // nothing known here: this frame becomes a new place. Learn it while the user writes.
+    ar.m.controller.stopProcessVideo();
+    shot = { frame: toCanvas(video, 480), progress: 0 };
+    shot.mind = compileFrame(shot);
+    shot.mind.catch(() => {});   // reported when the user saves
+  }
+  photoData = audioData = null;
+  $('memText').value = ''; $('memPreview').hidden = true; $('memPhoto').value = '';
+  $('memAudio').hidden = true; $('memRec').textContent = 'Ghi âm';
+  updateStatus();
+};
+
+// Back to the live camera without saving.
+function resume() {
+  if (!shot) return;
+  const fresh = !shot.entry;
+  shot = null;
+  $('pin').hidden = true;
+  ar.m.video.play();
+  if (fresh) ar.m.controller.processVideo(ar.m.video);
+  updateStatus();
+}
+const cancelShot = () => { hideCompose(); resume(); };
+$('reshoot').onclick = cancelShot;
+$('memCancel').onclick = cancelShot;
+
+// Live: tap a card to open it. Frozen: tap to choose where the new memory goes.
+const ray = new THREE.Raycaster();
+$('ar').addEventListener('click', e => {
+  if (!ar?.ready || rec) return;   // taps are ignored while recording
+
+  if (!shot) {
+    if (ar.active < 0) return;
+    const entry = ar.entries[ar.active];
+    const r = ar.m.renderer.domElement.getBoundingClientRect();
+    ray.setFromCamera(new THREE.Vector2((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1), ar.m.camera);
+    const hit = ray.intersectObjects(entry.cards.map(c => c.sprite))[0];
+    if (!hit) return;
+    const mem = hit.object.userData.mem;
+    viewing = { entry, mem };
+    $('viewPhoto').hidden = !mem.photo;
+    if (mem.photo) $('viewPhoto').src = mem.photo;
+    $('viewAudio').hidden = !mem.audio;
+    if (mem.audio) $('viewAudio').src = mem.audio;
+    $('viewText').textContent = mem.text;
+    $('viewDate').textContent = fmtDate(mem.t);
+    $('viewer').hidden = false;
+    return;
+  }
+
+  if (shot.entry) {
+    // where the tap meets the known place's plane
+    const r = ar.m.renderer.domElement.getBoundingClientRect();
+    ray.setFromCamera(new THREE.Vector2((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1), ar.m.camera);
+    const local = ray.ray.clone().applyMatrix4(shot.matrix.clone().invert());
+    const t = -local.origin.z / local.direction.z;
+    if (!(t > 0)) return;
+    const p = local.at(t, new THREE.Vector3());
+    if (Math.abs(p.x) > 3 || Math.abs(p.y) > 3) return;   // too far from the anchor to track reliably
+    shot.pos = { x: p.x, y: p.y };
+  } else {
+    // the frozen frame is the anchor image: origin at its centre, 1 unit = its width, y up
+    const r = ar.m.video.getBoundingClientRect();
+    const u = (e.clientX - r.left) / r.width, v = (e.clientY - r.top) / r.height;
+    shot.pos = { x: u - 0.5, y: (0.5 - v) * r.height / r.width };
+  }
+  $('pin').style.left = e.clientX + 'px';
+  $('pin').style.top = e.clientY + 'px';
+  $('pin').hidden = false;
+  $('compose').hidden = false;
+});
+
+/* ---------- compose: text, photo, voice ---------- */
+$('memPhoto').onchange = async () => {
+  const file = $('memPhoto').files[0];
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  photoData = toCanvas(await loadImage(url), 640).toDataURL('image/jpeg', 0.8);
+  URL.revokeObjectURL(url);
+  $('memPreview').src = photoData; $('memPreview').hidden = false;
+};
+
+// Record a voice note (max 60s). Stored as a data URL next to the memory, like photos.
+$('memRec').onclick = async () => {
+  if (rec) return stopRec();
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    alert('Không dùng được micro. Hãy cấp quyền micro cho trang.');
+    return;
+  }
+  const chunks = [], t0 = Date.now();
+  const secs = () => Math.floor((Date.now() - t0) / 1000);
+  rec = new MediaRecorder(stream);
+  const tick = setInterval(() => {
+    $('memRec').textContent = '■ Dừng · ' + fmtDur(secs());
+    if (secs() >= 60) stopRec();
+  }, 250);
+  rec.ondataavailable = e => chunks.push(e.data);
+  rec.onstop = () => {
+    clearInterval(tick);
+    stream.getTracks().forEach(t => t.stop());
+    const blob = new Blob(chunks, { type: rec.mimeType });
+    rec = null;
+    $('memRec').textContent = 'Ghi âm lại';
+    if ($('compose').hidden) { $('memSave').disabled = false; return; }   // sheet was closed: discard
+    audioDur = Math.max(1, secs());
+    const fr = new FileReader();
+    fr.onload = () => {
+      audioData = fr.result;
+      $('memAudio').src = audioData; $('memAudio').hidden = false;
+      $('memSave').disabled = false;
+    };
+    fr.readAsDataURL(blob);
+  };
+  $('memSave').disabled = true;   // re-enabled once the recording is ready
+  $('memRec').textContent = '■ Dừng · 0:00';
+  rec.start();
+};
+
+$('memSave').onclick = async () => {
+  const text = $('memText').value.trim();
+  if (!text && !photoData && !audioData) return;
+  const s = shot;
+  const mem = { id: Date.now(), x: s.pos.x, y: s.pos.y, text, photo: photoData, audio: audioData, audioDur, t: Date.now() };
+  hideCompose();
+  if (s.entry) {
+    s.entry.place.memories.push(mem);
+    await savePlace(s.entry.place);
+    addCard(s.entry, mem);
+    resume();
+    return;
+  }
+  busy(`Đang neo vào không gian… ${Math.round(s.progress)}%`);
+  try {
+    const mind = await s.mind;
+    const name = 'Mốc ' + new Date().toLocaleString('vi-VN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+    await savePlace({ id: Date.now(), name, thumb: s.frame.toDataURL('image/jpeg', 0.6), mind, memories: [mem] });
+    shot = null;
+    $('pin').hidden = true;
+    await startSession();   // reload the camera with the new place as a target
+  } catch (e) {
+    alert('Không neo được chỗ này: ' + (e && e.message || e));
+    resume();
+  }
+  busy(null);
+};
+
+/* ---------- viewer ---------- */
+$('viewClose').onclick = hideViewer;
+$('viewDelete').onclick = async () => {
+  const { entry, mem } = viewing;
+  entry.place.memories = entry.place.memories.filter(x => x !== mem);
+  await savePlace(entry.place);
+  const i = entry.cards.findIndex(c => c.sprite.userData.mem === mem);
+  const [{ sprite, stem }] = entry.cards.splice(i, 1);
+  entry.group.remove(sprite, stem);
+  sprite.material.map.dispose(); sprite.material.dispose(); stem.geometry.dispose(); stem.material.dispose();
+  hideViewer();
+  updateStatus();
+};
+
+/* ---------- saved places ---------- */
+$('openPlaces').onclick = () => {
+  if (shot) return;
+  hideViewer();
+  $('places').innerHTML = '';
+  for (const p of places) {
+    const li = document.createElement('li');
+    li.innerHTML = '<img alt=""><div><b></b><span></span></div><button aria-label="Xóa mốc">✕</button>';
+    li.querySelector('img').src = p.thumb;
+    li.querySelector('b').textContent = p.name;
+    li.querySelector('span').textContent = p.memories.length + ' ký ức';
+    li.querySelector('button').onclick = async () => {
+      if (!confirm(`Xóa "${p.name}" cùng ${p.memories.length} ký ức?`)) return;
+      $('placesSheet').hidden = true;
+      await store('readwrite', s => s.delete(p.id));
+      startSession();
+    };
+    $('places').append(li);
+  }
+  $('empty').hidden = places.length > 0;
+  $('placesSheet').hidden = false;
+};
+$('closePlaces').onclick = () => { $('placesSheet').hidden = true; };
+
+$('retry').onclick = startSession;
+startSession();
+</script>
+</body>
+</html>
