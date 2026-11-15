@@ -50,13 +50,16 @@ const lazy = (() => {   // three + MindAR + tfjs are heavy: only load once a pla
     .then(([THREE, M, C]) => ({ THREE, MindARThree: M.MindARThree, Compiler: C.Compiler }));
 })();
 
+const APP_VERSION = 4;   // shown in the account sheet: tells you at a glance whether the phone runs the latest code
+$('appVer').textContent = `· phiên bản ${APP_VERSION}`;
+
 let toastT;
-function toast(msg) {
+function toast(msg, ms = 2600) {
   const t = $('toast');
   t.textContent = msg;
   t.classList.add('show');
   clearTimeout(toastT);
-  toastT = setTimeout(() => t.classList.remove('show'), 2600);
+  toastT = setTimeout(() => t.classList.remove('show'), ms);
 }
 
 /* ---------- sheets ---------- */
@@ -882,7 +885,11 @@ async function openFriends() {
     const f = await ensureFriends();
     await f.load();
     openSheet('friends');
-  } catch (e) { toast(navigator.onLine ? 'Không mở được danh sách bạn bè. Thử lại sau.' : 'Không có mạng. Thử lại khi có kết nối.'); }
+  } catch (e) {
+    console.warn('friends failed', e);
+    const why = String(e?.message || e).slice(0, 90);
+    toast(navigator.onLine ? `Không mở được danh sách bạn bè (${why}).` : 'Không có mạng. Thử lại khi có kết nối.', 6000);
+  }
 }
 async function refreshFriendsBadge() {
   try {

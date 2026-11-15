@@ -1,6 +1,6 @@
 // Offline support. Our own files: network first (so updates land), cache as fallback.
 // Pinned CDN files (three, MindAR, fonts): cache first.
-const CACHE = 'memory-graph-v3';
+const CACHE = 'memory-graph-v4';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'config.js', 'cloud.js', 'sync.js', 'friends.js', 'privacy.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 const CDN = ['cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 
@@ -23,7 +23,8 @@ self.addEventListener('fetch', e => {
     return res;
   };
   if (url.origin === location.origin) {
-    e.respondWith(fetch(req).then(store).catch(() => caches.match(req, { ignoreSearch: true })));
+    // no-cache = always revalidate with the server, so a stale browser-cached app.js can never outlive a deploy
+    e.respondWith(fetch(req, { cache: 'no-cache' }).then(store).catch(() => caches.match(req, { ignoreSearch: true })));
   } else if (CDN.includes(url.hostname)) {
     e.respondWith(caches.match(req).then(hit => hit || fetch(req).then(store)));
   }
